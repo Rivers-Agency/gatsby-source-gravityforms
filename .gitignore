@@ -1,0 +1,8 @@
+/yarn.lock
+/package-lock.json
+/*.js
+!index.js
+/node_modules/
+.env*
+/utils
+/schema
