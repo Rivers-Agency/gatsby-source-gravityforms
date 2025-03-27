@@ -3,83 +3,72 @@ const oauthSignature = require('oauth-signature')
 const { routes } = require('./routes')
 const { isObjEmpty, slugify, new0AuthParameters } = require('./helpers')
 
-// Get list of all forms from GF
-async function getForms(basicAuth, api, baseUrl) {
-    reporter.verbose('Fetching form ids')
+let globalAttemptCount = 0;
+const maxGlobalAttempts = 3;
+const timeout = 5000;
 
-    const authParams = new0AuthParameters(api.key)
+const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-    let result
+async function fetch({ baseUrl, route, api, basicAuth, method = 'GET', params = {} }) {
+
+    const fullUrl = baseUrl + route;
+    const authParams = new0AuthParameters(api.key);
+    const signature = oauthSignature.generate(method, fullUrl, authParams, api.secret);
 
     try {
-        const signature = oauthSignature.generate(
-            'GET',
-            baseUrl + routes.wp + routes.gf + routes.forms,
-            authParams,
-            api.secret
-        )
+        const response = await axios.get(fullUrl, {
+            responseType: 'json',
+            params: {
+                ...authParams,
+                ...params,
+                oauth_signature: signature
+            },
+            auth: basicAuth
+        });
 
-        result = await axios.get(
-            baseUrl + routes.wp + routes.gf + routes.forms,
-            {
-                responseType: 'json',
-                params: {
-                    ...authParams,
-                    oauth_signature: signature,
-                },
-                auth: basicAuth,
-            }
-        )
+        return response.data;
     } catch (err) {
-        apiErrorHandler(err)
-        // Kill the plugin
-        return false
+        globalAttemptCount++;
+        console.warn(`Gravity Forms fetch attempt ${globalAttemptCount} failed: ${fullUrl}`);
+        if (globalAttemptCount >= maxGlobalAttempts) {
+            apiErrorHandler(err);
+            return false;
+        } else {
+            await wait(timeout);
+            return await fetch({ baseUrl, route, api, basicAuth, method, params });
+        }
     }
+}
 
-    return result.data
+
+// Get list of all forms from GF
+async function getForms(basicAuth, api, baseUrl) {
+    reporter.verbose('Fetching form ids');
+    return await fetch({
+        baseUrl,
+        route: routes.wp + routes.gf + routes.forms,
+        api,
+        basicAuth
+    });
 }
 
 // Get form fields from GF
 async function getFormFields(basicAuth, api, baseUrl, form) {
-    reporter.verbose(`Fetching fields for form ${form.id}`)
+    reporter.verbose(`Fetching fields for form ${form.id}`);
 
-    let authParams = new0AuthParameters(api.key)
+    const route = `${routes.wp + routes.gf + routes.forms}/${form.id}`;
+    const data = await fetch({
+        baseUrl,
+        route,
+        api,
+        basicAuth
+    });
 
-    let result
+    if (!data) return false;
 
-    const apiURL =
-        baseUrl + routes.wp + routes.gf + routes.forms + '/' + form.id
-
-    // Make a new signature
-    const signature = oauthSignature.generate(
-        'GET',
-        apiURL,
-        authParams,
-        api.secret
-    )
-
-    try {
-        result = await axios.get(
-            baseUrl + routes.wp + routes.gf + routes.forms + '/' + form.id,
-            {
-                responseType: 'json',
-                params: {
-                    ...authParams,
-                    oauth_signature: signature,
-                },
-                auth: basicAuth,
-            }
-        )
-    } catch (err) {
-        apiErrorHandler(err)
-        // Kill the plugin
-        return false
-    }
-
-    result.data['slug'] = slugify(form.title)
-    result.data['apiURL'] = apiURL
-
-    return result.data
+    data['slug'] = slugify(form.title);
+    data['apiURL'] = baseUrl + route;
+    return data;
 }
 
 async function getFormsAndFields(basicAuth, api, baseUrl, formsArgs) {
